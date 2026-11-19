@@ -1,0 +1,403 @@
+---
+title: 'Spring_school_nccr: colorectal cancer'
+author: "Simon Yersin"
+date: '2022-04-27'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Set wd
+```{r}
+getwd()
+setwd("/Users/admin/Documents/Courses/Spring School Bioinformatics")
+```
+# Load library
+```{r}
+library("tidyverse") # for general data wrangling and plotting
+library("SIAMCAT")   # for statistical and machine learning analyses
+```
+# loading the data
+```{r}
+load(url("https://zenodo.org/record/6524317/files/motus_profiles_study1.Rdata"))
+```
+# Metadata
+```{r}
+# Number of sample in each group (CRC or CTRL)
+table(meta_study1$Group)
+# or:
+nCTR <- length(which(meta_study1$Group == "CTR"))
+nCRC <- length(which(meta_study1$Group == "CRC"))
+nCTR
+nCRC
+
+head(meta_study1)
+```
+# mOTU table
+```{r}
+motus_study1 <- as.data.frame(motus_study1)
+
+# Removing species that don't appear in any samples
+motus_filter <- motus_study1 %>%
+  dplyr::filter(rowSums(motus_study1) > 0)
+motus_filter <- as.matrix(motus_filter)
+# Relative abundance
+motus_relab <- prop.table(motus_filter, 2)
+
+mOTU_t <- t(motus_relab)
+# Merge metadata and species table
+mOTU_meta <- merge(mOTU_t, meta_study1, by=0)
+# pivot longer to have one column with relative abundance instead of multiple column containing each species 
+mOTU_meta_long <- mOTU_meta %>% 
+  pivot_longer(cols = colnames(mOTU_meta)[grepl("mOTU", colnames(mOTU_meta))],
+               names_to = 'Species', values_to = 'rel_abundance')
+```
+## PCA
+```{r}
+# log tranform with correction to deal with zeros
+log_rel_ab = log10(motus_relab+ 10^-4)
+# removing species 
+log_rel_ab = log_rel_ab[rowSums(motus_relab) > 0,]
+# PCoA 
+pca <- prcomp(t(log_rel_ab),
+             center = TRUE,
+             scale. = TRUE)
+# dataframe with PCoA axis and metadata informations for plotting
+df = data.frame(
+  pc1 = pca$x[,1],
+  pc2 = pca$x[,2],
+  Group = as.factor(meta_study1[rownames(pca$x),"Group"]),
+  Age = meta_study1[rownames(pca$x),"Age"],
+  Sex = meta_study1[rownames(pca$x),"Gender"],
+  BMI = meta_study1[rownames(pca$x),"BMI"]
+)
+# plot
+pdf("pca_crc.pdf")
+ggplot(df,aes(x = pc1,y = pc2, col = Group)) + 
+  geom_point() +
+  theme_bw()
+dev.off()
+```
+# Wilcoxon test
+```{r}
+# Wilcoxon test on each species and extracting p-values
+wil_test <- mOTU_meta_long %>%
+  group_by(Species) %>%
+  mutate(pval = wilcox.test(rel_abundance ~ Group, paired = F)$p.value)
+
+# correct manually by multiplying my the number of testes (number of species): using bonferroni correction
+wil_test['p.value_bonf'] <- wil_test$pval * length(unique(wil_test$Species))
+# if you don't, by chance you can have significant difference
+
+# Visualization of the least significant 
+head(wil_test[order(wil_test$p.value_bonf,decreasing = F),])
+# See how many unique species are significant 
+unique(wil_test[which(wil_test$p.value_bonf < 0.05), "Species"])
+
+wil_test[which(wil_test$p.value_bonf < 0.05), "Species"]
+
+# plot
+pdf("boxplot_signifSpecies_wilcoxon.pdf", width = 10)
+ggplot(wil_test[which(wil_test$p.value_bonf < 0.05),], aes(x=Group, y = log10(rel_abundance+ 10^-4))) +
+  geom_boxplot() +
+  geom_point(aes(col = FOBT)) +
+  facet_grid(~Species) +
+  theme_bw() +
+  ggtitle("Siginicantly different species (Wilcoxon) between the Ctrl and CRC groups") +
+  ylab("log relative abundance")
+dev.off()
+```
+
+#SIAMCAT
+Introduction
+Associations between microbiome and host phenotypes are ideally described by quantitative models able to predict host status from microbiome composition. SIAMCAT can do so for data from hundreds of thousands of microbial taxa, gene families, or metabolic pathways over hundreds of samples. SIAMCAT produces graphical output for convenient assessment of the quality of the input data and statistical associations, for model diagnostics and inference revealing the most predictive microbial biomarkers.
+
+needs a feature matrix (either matrix, dataframe or phyloseq-otu_table) which contains values of different features (in rows) for different samples (in columns)
+Ex: relative abundance for bacterial species calculated with mOTU profiler for X samples
+
+```{r}
+dim(motus_filter)
+head(meta_study1)
+# Label creation
+# Tell siamcat which samples are CRC and which are CTRL
+label.crc <- create.label(meta = meta_study1, label = "Group", case = 'CRC')
+
+#Label used as case:
+#   CRC
+#Label used as control:
+#   CTR
+
+# SIAMCAT need relative abundance
+motus_study1 <- as.matrix(motus_study1)
+motus_ra <- prop.table(motus_study1, 2)
+# create a SIAMCAT object
+sc.obj <- siamcat(feat = motus_ra,
+                  label = label.crc,
+                  meta = meta_study1)
+# See information about our siamcat object
+show(sc.obj)
+
+# Perform unsupervised feature selection using the function filter.features
+#In our case, filter species with abundance above the cutoff od 0.001
+sc.obj <- filter.features(sc.obj,
+                          filter.method = 'abundance',
+                          cutoff = 0.001)
+
+#sc.obj <- filter.features(sc.obj,
+ #                         filter.method = 'prevalence',
+    #                      cutoff = 0.05, feature.type = 'filtered')
+show(sc.obj)
+# Added a line filtered features
+```
+
+## Association testing 
+Associations between microbial species and the label can be tested with the check.associations function. The function computes for each species the significance using a non-parametric Wilcoxon test and different effect sizes for the association (e.g. AUC or fold change).
+```{r}
+sc.obj <- check.associations(sc.obj, alpha = 0.05, fn.plot = 'association_plots_prev_abun.pdf')
+
+# alpha is significance value
+# mult.corr: multiple hypothesis correction method
+# detect.lim: pseudocount to be added before the log-transformation of the data
+#pr.cutoff : cutoff for the prevalence computation (default 1e-06)
+
+
+```
+
+## Cofounder testing
+As many biological and technical factors beyond the primary phenotype of interest can influence microbiome composition, simple association studies may suffer confounding by other variables, which can lead to spurious results. The check.confounders function provides the option to test the associated metadata variables for potential confounding influence. No information is stored in the SIAMCAT object, but the different analyses are visualized and saved to a combined pdf file for qualitative interpretation.
+```{r}
+check.confounders(sc.obj, fn.plot = 'confounder_plots.pdf',
+                    meta.in = NULL, feature.type = 'filtered')
+
+#This function checks for associations between class labels and potential confounders (e.g. Age, Sex, or BMI) that are present in the metadata. Statistical testing is performed with Fisher's exact test or Wilcoxon test, while associations are visualized either as barplot or Q-Q plot, depending on the type of metadata.
+
+#Additionally, it evaluates associations among metadata variables using conditional entropy and associations with the label using generalized linear models, producing a correlation heatmap and appropriate quantitative barplots, respectively.
+
+
+#The conditional entropy check primarily serves to remove nonsensical variables from subsequent checks. Conditional entropy quantifies the unique information contained in one variable (row) respective to another (column). Identical variables and derived variables which share the exact same information will have a value of zero. In this example, the label was derived from the Group variable which was determined from AJCC stage, so both are excluded.
+
+```
+
+# Model building
+One strength of SIAMCAT is the versatile but easy-to-use interface for the construction of machine learning models on the basis of microbial species. SIAMCAT contains functions for data normalization, splitting the data into cross-validation folds, training the model, and making predictions based on cross-validation instances and the trained models.
+## Data normalization
+Using log but several other methods and customization are availble
+```{r}
+sc.obj <- normalize.features(sc.obj, norm.method = "log.unit",
+                             norm.param = list(log.n0 = 1e-06, n.p = 2, norm.margin =1))
+
+## features normalized successfully
+```
+
+## Prepare Cross-Validation
+Preparation of the cross-validation fold is a crucial step in machine learning. SIAMCAT greatly simplifies the set-up of cross-validation schemes, including stratification of samples or keeping samples inseperable based on metadata. For this small example, we choose a twice-repeated 5-fold cross-validation scheme. The data-split will be saved in the data_split slot of the SIAMCAT object.
+```{r}
+sc.obj <- create.data.split(sc.obj, num.folds = 5, num.resample = 2)
+#features splitted for cross-validation successfully
+```
+
+## Model training
+```{r}
+sc.obj <- train.model(sc.obj, method = "lasso")
+# other method: ridge
+
+# models saved ion the model_list slot of the SIAMCAT object. 
+# model building is performed using the mlr R package
+
+# get information about the model type
+model_type(sc.obj)
+
+
+# access the models
+models <- models(sc.obj)
+models[[1]]$learner
+
+```
+
+## Make predictions
+Using the data-split and the models trained in previous step, we can use the function make.predictions in order to apply the models on the test instances in the data-split. The predictions will be saved in the pred_matrix slot of the SIAMCAT object
+```{r}
+sc.obj <- make.predictions(sc.obj)
+# Made predictions succesfully
+
+pred_matrix <- pred_matrix(sc.obj)
+
+head(pred_matrix)
+
+```
+
+# Model evaluation and interpretation
+In the final part, we want to find out how well the model performed and which microbial species had been selected in the model. In order to do so, we first calculate how well the predictions fit the real data using the function evaluate.predictions. This function calculates the Area Under the Receiver Operating Characteristic (ROC) Curve (AU-ROC) and the Precision Recall (PR) Curve for each resampled cross-validation run.
+```{r}
+sc.obj <- evaluate.predictions(sc.obj)
+#Evaluated predictions successfully
+```
+
+## Evaluation plot
+```{r}
+model.evaluation.plot(sc.obj, fn.plot = "evaluation_ROC_mOTUS_training")
+```
+
+## Interpreation plot
+The final plot produced by SIAMCAT is the model interpretation plot, created by the model.interpretation.plot function. The plot shows for the top selected features the
+
+- model weights (and how robust they are) as a barplot,
+- a heatmap with the z-scores or fold changes for the top selected features, and
+- a boxplot showing the proportions of weight per model which is captured by the top selected features.
+
+Additionally, the distribution of metadata is shown in a heatmap below.
+The function again produces a pdf-file optimized for a landscape DIN-A4 plotting region.
+```{r}
+model.interpretation.plot(sc.obj, fn.plot = "interpreation.pdf",
+                          consens.thres = 0.5, limits = c(-3,3),
+                          heatmap.type = 'zscore')
+#Successfully plotted model interpretatiomn plot to: interpretation.pdf
+```
+
+# Explore other profiling methods
+```{r}
+# same samples profiled with MAPseq
+load(url("https://zenodo.org/record/6524317/files/mapseq_profiles_study1.Rdata"))
+```
+
+## 97 MAPseq
+```{r}
+# Using the same label and metadata as it is just profiled with MAPseq instead of mOTUs
+
+# relative abundance
+mapseq_97_ra <- prop.table(mapseq_97_study1, 2)
+# SIAMCAT object
+sc.obj.97  <- siamcat(feat = mapseq_97_ra,
+                  label = label.crc,
+                  meta = meta_study1)
+# Abundance filtering
+sc.obj.97 <- filter.features(sc.obj.97,
+                          filter.method = 'abundance',
+                          cutoff = 0.001)
+# Log transform normalization
+sc.obj.97 <- normalize.features(sc.obj.97, norm.method = "log.unit",
+                             norm.param = list(log.n0 = 1e-06, n.p = 2, norm.margin =1))
+# Split data for training
+sc.obj.97 <- create.data.split(sc.obj.97, num.folds = 5, num.resample = 2)
+# Train model with lasso method
+sc.obj.97 <- train.model(sc.obj.97, method = "lasso")
+# Make predictions
+sc.obj.97 <- make.predictions(sc.obj.97)
+
+pred_matrix97 <- pred_matrix(sc.obj.97)
+
+head(pred_matrix97)
+#Evaluate predictions
+sc.obj.97 <- evaluate.predictions(sc.obj.97)
+# Evaluate prediction with ROC curve
+model.evaluation.plot(sc.obj.97)
+# Interpretation plots
+model.interpretation.plot(sc.obj.97, fn.plot = "interpreation_97.pdf",
+                          consens.thres = 0.5, limits = c(-3,3),
+                          heatmap.type = 'zscore')
+```
+
+## MAPseq 99
+```{r}
+# relative abundance
+mapseq_99_ra <- prop.table(mapseq_99_study1, 2)
+# SIAMCAT object
+sc.obj.99  <- siamcat(feat = mapseq_99_ra,
+                  label = label.crc,
+                  meta = meta_study1)
+# Abundance filtering
+sc.obj.99 <- filter.features(sc.obj.99,
+                          filter.method = 'abundance',
+                          cutoff = 0.001)
+# Log transform normalization
+sc.obj.99 <- normalize.features(sc.obj.99, norm.method = "log.unit",
+                             norm.param = list(log.n0 = 1e-06, n.p = 2, norm.margin =1))
+# Split data for training
+sc.obj.99 <- create.data.split(sc.obj.99, num.folds = 5, num.resample = 2)
+# Train model with lasso method
+sc.obj.99 <- train.model(sc.obj.99, method = "lasso")
+# Make predictions
+sc.obj.99 <- make.predictions(sc.obj.99)
+# Made predictions succesfully
+# prediction matrix
+pred_matrix99 <- pred_matrix(sc.obj.99)
+
+head(pred_matrix99)
+# Prediction evaluation
+sc.obj.99 <- evaluate.predictions(sc.obj.99)
+# Model evaluations: ROC curve
+model.evaluation.plot(sc.obj.99)
+# Interpretation plot
+model.interpretation.plot(sc.obj.99, fn.plot = "interpreation_99.pdf",
+                          consens.thres = 0.5, limits = c(-3,3),
+                          heatmap.type = 'zscore')
+```
+
+# Prediction on External Data
+```{r}
+load(url("https://zenodo.org/record/6524317/files/motus_profiles_study2.Rdata"))
+```
+
+## Preparaing SIAMCAT object
+```{r}
+dim(motus_study2)
+
+motus_study2 <- as.data.frame(motus_study2)
+motus_filter2 <- motus_study2 %>%
+  dplyr::filter(rowSums(motus_study2) > 0)
+motus_filter2 <- as.matrix(motus_filter2)
+
+# Label creation
+# Tell siamcat which samples are CRC and which are CTRL
+label.crc2 <- create.label(meta = meta_study2, label = "Group", case = 'CRC')
+
+# SIAMCAT need relative abundance
+motus_study2 <- as.matrix(motus_study2)
+motus_ra2 <- prop.table(motus_study2, 2)
+# create a SIAMCAT object
+sc.obj2 <- siamcat(feat = motus_ra2,
+                  label = label.crc2,
+                  meta = meta_study2)
+# See information about our siamcat object
+show(sc.obj2)
+
+# Perform unsupervised feature selection using the function filter.features
+#In our case, filter species with abundance above the cutoff od 0.001
+sc.obj2 <- filter.features(sc.obj2,
+                          filter.method = 'abundance',
+                          cutoff = 0.001)
+show(sc.obj2)
+# Normalize with log
+sc.obj2 <- normalize.features(sc.obj2, norm.method = "log.unit",
+                             norm.param = list(log.n0 = 1e-06, n.p = 2, norm.margin =1))
+```
+
+## Predictions external data
+```{r}
+# Make predictions
+sc.obj2 <- make.predictions(sc.obj, siamcat.holdout = sc.obj2)
+# Made predictions succesfully
+
+pred_matrix2 <- pred_matrix(sc.obj2)
+
+head(pred_matrix2)
+# Evaluate predictions with ROC curve
+sc.obj2 <- evaluate.predictions(sc.obj2)
+```
+## Predictions comparison
+```{r}
+# evaluate the model by comparison of the ROC curve
+model.evaluation.plot("mOTUs_training_set" = sc.obj, 
+                      "MAPseq_97" = sc.obj.97,
+                      "MAPseq_99" = sc.obj.99,
+                      colours = c("blue", "red", "lightgreen"), fn.plot = "evaluation_ROC_comparisons")
+
+model.evaluation.plot("mOTUs_training_set" = sc.obj, 
+                     "mOTUS_test_set" = sc.obj2, 
+                      colours = c("blue", "orange"), fn.plot = "evaluation_ROC_train_test")
+
+
+```

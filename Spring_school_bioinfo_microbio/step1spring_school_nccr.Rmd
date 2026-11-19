@@ -1,0 +1,174 @@
+---
+title: "Spring_school_nccr"
+author: "Simon Yersin"
+date: '2022-04-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+getwd()
+setwd("/Users/admin/Documents/Courses/Spring School Bioinformatics")
+```
+
+```{r}
+library("tidyverse") # for general data wrangling and plotting
+library("SIAMCAT")   # for statistical and machine learning analyses
+
+```
+
+```{r}
+load(url("https://zenodo.org/record/6517497/files/human_microbiome_dataset.Rdata"))
+
+```
+
+
+```{r}
+reads_per_sample <- as.data.frame(colSums(tax_profile))
+colnames(reads_per_sample) <- "reads_per_sample"
+
+reads_per_sample_hist <- ggplot(reads_per_sample, aes(x=reads_per_sample)) +
+  geom_histogram(binwidth = 150) +
+  theme_classic() +
+  xlab('Number of reads per Sample') +
+  ylab('No. of samples')
+
+```
+
+#Prevalence
+Prevalence of a species refers to the the proportion of samples in which that species is detected.
+
+First we calculate prevalence for all the genera.
+```{r}
+rel_abund <- prop.table(tax_profile, 2)
+
+rel_abund <- as.data.frame(rel_abund)
+rel_abund['prevalence'] <-   apply(rel_abund, 1, function(i) sum(i > 0) / ncol(rel_abund))
+
+which(rel_abund$prevalence == 1) #1,2,11
+rownames(rel_abund[c(1,2,11),])
+
+which(rel_abund$prevalence == 0) #100 194 202 228 229 233 236 240 242 244
+rownames(rel_abund[c(100,194, 202, 228, 229, 233, 236, 240, 242, 244),])
+
+length(which(rel_abund$prevalence ==min(rel_abund$prevalence[which(rel_abund$prevalence > 0)])))
+
+#Plotted as histogram
+prevalence_df <- as.data.frame(rel_abund$prevalence)
+colnames(prevalence_df) <- "Prevalence"
+prevalence_df$genus <- rownames(rel_abund)
+
+jpeg("hist_prevalence.jpeg")
+ggplot(data = prevalence_df) + geom_histogram(mapping = aes(x = Prevalence), bins = 60)
+dev.off()
+#Most prevalent
+head(prevalence_df[order(prevalence_df$Prevalence,decreasing = T),])
+#least prevalent
+head(prevalence_df[order(prevalence_df$Prevalence,decreasing = F),])
+```
+
+```{r}
+rel_abund <- rel_abund %>%
+  dplyr::filter(prevalence > 0)
+pval <- apply(rel_abund[,1:496], 1, function(x) shapiro.test(x)$p.value)
+pval <- as.data.frame(pval)
+which(pval > 0.05) # 0 are below zero, none are normality distributed
+
+shapiro.test(as.numeric(rel_abund[1,1:496]))$p.value
+```
+
+```{r}
+length(which(rel_abund[3,1:496] == 0))
+
+zero_genus <- apply(rel_abund, 1, function(x) sum(x==0))
+zero_genus <- as.data.frame(zero_genus)
+zero_genus$genus <- rownames(zero_genus)
+
+ggplot(zero_genus, aes(x =reorder(genus, -zero_genus), y = zero_genus)) + geom_bar(stat = "identity")
+
+zero_sample <- apply(rel_abund, 2, function(x) sum(x==0))
+zero_sample <- as.data.frame(zero_sample)
+zero_sample$sampleID <- rownames(zero_sample)
+ggplot(zero_sample, aes(x =reorder(sampleID, -zero_sample), y = zero_sample)) + geom_bar(stat = "identity")
+
+```
+
+```{r}
+library(vegan)
+
+
+
+dist_eucl <- vegdist(t(rel_abund[,1:496]), method = "euclidean")
+dist_eucl <- as.matrix(dist_eucl)
+
+#Visualize either with boxplot or with PCoA
+
+
+rel_ab = prop.table(tax_profile,2)
+log_rel_ab = log10(rel_ab+ 10^-4)
+
+n_samples = ncol(log_rel_ab)
+
+# where to save the result
+distance = c()
+type = c()
+
+# we go through all the pair of samples and we calculate the distance
+for(i in c(1: (n_samples-1) )){
+  for(j in c( (i+1) : n_samples)){
+    # name of the samples
+    s_i = colnames(log_rel_ab)[i]
+    s_j = colnames(log_rel_ab)[j]
+    # profiles
+    profile_i = log_rel_ab[,i]
+    profile_j = log_rel_ab[,j]
+    # calculate the distance as sum of the absolute distance
+    d = sum(abs(profile_i - profile_j))
+    # add the values
+    distance = c(distance,d)
+    # add correct type
+    if(metadata[s_i,"Subject"] == metadata[s_j,"Subject"]){
+      type = c(type,"Within distance")
+    }else{
+      type = c(type,"Between distance")
+    }
+  }
+}
+
+df = data.frame(dist = distance,type = type)
+
+ggplot(df,aes(type,dist)) + geom_boxplot()
+
+
+#PCoA
+rel_ab <- prop.table(tax_profile,2)
+log_rel_ab = log10(rel_ab+ 10^-4)
+
+log_rel_ab = log_rel_ab[rowSums(rel_ab) > 0,]
+
+#prcomp principal component analyisis
+pc <- prcomp(t(log_rel_ab),
+             center = TRUE,
+             scale. = TRUE)
+
+df = data.frame(
+  pc1 = pc$x[,1],
+  pc2 = pc$x[,2],
+  Subject = as.factor(metadata[rownames(pc$x),"Subject"]),
+  Timepoint = metadata[rownames(pc$x),"Timepoint"],
+  Sex = metadata[rownames(pc$x),"Sex"]
+)
+
+
+ggplot(df,aes(x = pc1,y = pc2, col = Sex)) + geom_point()
+
+ggplot(df,aes(x = pc1,y = pc2, col = Timepoint)) + geom_point()
+
+ggplot(df,aes(x = pc1,y = pc2, col = Subject)) + geom_point() +
+theme(legend.position = "none")
+```
+
+
