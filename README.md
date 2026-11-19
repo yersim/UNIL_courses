@@ -3,6 +3,7 @@
 ## A Gentle Introduction to Decision Trees and Random Forests with Python and R course
 
 > Objectives:
+
 Acquire the key competencies needed to apply decision tree and random forest methods to simple datasets
 
 > Content
