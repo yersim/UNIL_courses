@@ -1,4 +1,4 @@
-# NGS - - Quality Control, Alignment, Visualisation
+# NGS - Quality Control, Alignment, Visualisation
 
 ## Overview
 
