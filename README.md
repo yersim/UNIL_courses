@@ -24,3 +24,13 @@ Orthology-focused arthropod comparative genomics
 > Day 3
 
  Duplication of genes and genomes, expression
+
+## Spring School Bioinformatics and Computational Approaches in Microbiology
+
+> Goal
+
+Provide PhD students and postdocs with theoretical and mostly hands-on knowledge on selected topics about microbiome and antibiotics resistance.
+
+> Project 3
+
+Profiling and modeling the colorectal cancer microbiome.
